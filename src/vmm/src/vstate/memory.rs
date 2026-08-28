@@ -39,6 +39,10 @@ pub type GuestMmapRegion = vm_memory::MmapRegion<Option<AtomicBitmap>>;
 /// Errors associated with dumping guest memory to file.
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum MemoryError {
+    /// An overlay's data extent is not host-page aligned; overlays need a filesystem block size >= page size
+    OverlayNotPageAligned,
+    /// Failed to map an overlay extent over guest memory: {0}
+    OverlayMmap(std::io::Error),
     /// Cannot dump memory: {0}
     WriteMemory(GuestMemoryError),
     /// Cannot create mmap region: {0}
@@ -575,6 +579,102 @@ pub fn anonymous(
 
 /// Creates a GuestMemoryMmap given a `file` containing the data
 /// and a `state` containing mapping information.
+/// Lay a differential snapshot memory file over already-mapped guest
+/// memory: every data extent of the (sparse) `overlay` file is mapped
+/// `MAP_PRIVATE | MAP_FIXED` from the overlay at the host address of the
+/// same guest offset, replacing that part of the base mapping. The guest
+/// then reads overlay bytes there and base bytes everywhere else — the
+/// result `snapshot-editor edit-memory rebase` would have produced, with
+/// no file written and the base file's page cache still shared with every
+/// other microVM mapping it. Holes in the overlay (`SEEK_HOLE`) are pages
+/// the diff did not touch and stay on the base. Extents are filesystem
+/// block granular; a filesystem with blocks smaller than the host page
+/// size cannot be used for overlays (the `MAP_FIXED` offsets would not be
+/// page aligned) and is rejected.
+///
+/// Dirty-page tracking is unaffected: the overlay pages are file-backed
+/// and clean, so a later `Diff` capture of this microVM contains only what
+/// the guest writes after restore — a snapshot of it is `base ⊕ overlays ⊕
+/// that diff`, and the caller is expected to pass the whole chain.
+pub fn apply_overlay(regions: &[GuestRegionMmap], overlay: &File) -> Result<(), MemoryError> {
+    use std::os::unix::io::AsRawFd;
+
+    let page = host_page_size() as u64;
+    let file_len = overlay.metadata().map_err(MemoryError::FileMetadata)?.len();
+    let fd = overlay.as_raw_fd();
+    // Region i covers file offsets [file_off, file_off + size), in order,
+    // mirroring how `create` laid the base file out.
+    let mut file_off: u64 = 0;
+    let mut spans: Vec<(u64, u64, *mut u8)> = Vec::with_capacity(regions.len());
+    for region in regions {
+        let size = region.size() as u64;
+        spans.push((file_off, size, region.as_ptr()));
+        file_off = file_off
+            .checked_add(size)
+            .ok_or(MemoryError::OffsetTooLarge)?;
+    }
+    if file_len < file_off {
+        return Err(MemoryError::OffsetTooLarge);
+    }
+
+    let mut pos: u64 = 0;
+    loop {
+        // SAFETY: plain lseek on a file descriptor we own; the results are
+        // range-checked below before they reach mmap.
+        let data = unsafe { libc::lseek64(fd, pos as libc::off64_t, libc::SEEK_DATA) };
+        if data < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ENXIO) {
+                break; // no data past `pos`
+            }
+            return Err(MemoryError::FileMetadata(err));
+        }
+        let data = data as u64;
+        if data >= file_off {
+            break;
+        }
+        // SAFETY: as above.
+        let hole = unsafe { libc::lseek64(fd, data as libc::off64_t, libc::SEEK_HOLE) };
+        if hole < 0 {
+            return Err(MemoryError::FileMetadata(std::io::Error::last_os_error()));
+        }
+        let end = (hole as u64).min(file_off);
+        if data % page != 0 || end % page != 0 {
+            return Err(MemoryError::OverlayNotPageAligned);
+        }
+        // Map [data, end) in pieces, one per region it crosses.
+        let mut cur = data;
+        while cur < end {
+            let (r_off, r_size, r_ptr) = *spans
+                .iter()
+                .find(|(o, s, _)| *o <= cur && cur < *o + *s)
+                .ok_or(MemoryError::OffsetTooLarge)?;
+            let piece_end = end.min(r_off + r_size);
+            let len = (piece_end - cur) as usize;
+            // SAFETY: `r_ptr + (cur - r_off)` lies inside a mapping this
+            // process created for this region and `len` stays inside it;
+            // MAP_FIXED replaces exactly that range with pages of the same
+            // protection and privacy, so nothing outside changes.
+            let ret = unsafe {
+                libc::mmap(
+                    r_ptr.add((cur - r_off) as usize).cast(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                    fd,
+                    cur as libc::off_t,
+                )
+            };
+            if ret == libc::MAP_FAILED {
+                return Err(MemoryError::OverlayMmap(std::io::Error::last_os_error()));
+            }
+            cur = piece_end;
+        }
+        pos = end;
+    }
+    Ok(())
+}
+
 pub fn snapshot_file(
     file: File,
     regions: impl Iterator<Item = (GuestAddress, usize)>,

@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::mem::forget;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use semver::Version;
@@ -449,10 +449,21 @@ pub fn restore_from_snapshot(
                 .into());
             }
             (
-                guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages)
-                    .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
+                guest_memory_from_file(
+                    mem_backend_path,
+                    &params.mem_backend.overlays,
+                    mem_state,
+                    track_dirty_pages,
+                )
+                .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
                 None,
             )
+        }
+        MemBackendType::Uffd if !params.mem_backend.overlays.is_empty() => {
+            return Err(RestoreFromSnapshotGuestMemoryError::File(
+                GuestMemoryFromFileError::OverlaysNeedFileBackend,
+            )
+            .into());
         }
         MemBackendType::Uffd => guest_memory_from_uffd(
             mem_backend_path,
@@ -506,15 +517,22 @@ pub enum GuestMemoryFromFileError {
     Restore(#[from] MemoryError),
     /// Cannot restore hugetlbfs backed snapshot by mapping the memory file. Please use uffd.
     HugetlbfsSnapshot,
+    /// `overlays` are only supported with the `File` memory backend.
+    OverlaysNeedFileBackend,
 }
 
 fn guest_memory_from_file(
     mem_file_path: &Path,
+    overlays: &[PathBuf],
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
 ) -> Result<Vec<GuestRegionMmap>, GuestMemoryFromFileError> {
     let mem_file = File::open(mem_file_path)?;
     let guest_mem = memory::snapshot_file(mem_file, mem_state.regions(), track_dirty_pages)?;
+    for overlay in overlays {
+        let file = File::open(overlay)?;
+        memory::apply_overlay(&guest_mem, &file)?;
+    }
     Ok(guest_mem)
 }
 

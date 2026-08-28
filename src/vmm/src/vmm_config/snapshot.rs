@@ -130,6 +130,15 @@ pub struct MemBackendConfig {
     pub backend_path: PathBuf,
     /// Specifies the guest memory backend type.
     pub backend_type: MemBackendType,
+    /// `File` backend only: differential snapshot memory files to lay over
+    /// `backend_path`, oldest first. Each is a sparse file of the same size
+    /// as the full memory file (as written by `/snapshot/create` with
+    /// `snapshot_type: Diff`); its data extents are mapped `MAP_PRIVATE`
+    /// over the base mapping, so the restored guest sees base ⊕ overlays
+    /// without any file having been merged. A later overlay wins where two
+    /// overlap. Nothing is written to any of the files.
+    #[serde(default)]
+    pub overlays: Vec<PathBuf>,
 }
 
 /// The microVM state options.
