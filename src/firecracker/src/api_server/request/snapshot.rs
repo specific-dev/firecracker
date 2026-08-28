@@ -149,6 +149,7 @@ mod tests {
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
             fill_gap_pages: 0,
+            sync_snapshot_files: true,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
@@ -164,6 +165,7 @@ mod tests {
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
             fill_gap_pages: 0,
+            sync_snapshot_files: true,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),

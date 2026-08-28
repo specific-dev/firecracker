@@ -247,6 +247,7 @@ fn verify_create_snapshot(
         snapshot_path: snapshot_file.as_path().to_path_buf(),
         mem_file_path: memory_file.as_path().to_path_buf(),
         fill_gap_pages: 0,
+            sync_snapshot_files: true,
 };
 
     controller

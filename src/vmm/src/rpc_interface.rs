@@ -1241,6 +1241,7 @@ mod tests {
                 snapshot_path: PathBuf::new(),
                 mem_file_path: PathBuf::new(),
                 fill_gap_pages: 0,
+            sync_snapshot_files: true,
             },
         )));
         #[cfg(target_arch = "x86_64")]

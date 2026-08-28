@@ -172,14 +172,19 @@ pub fn create_snapshot(
         .save_state(vm_info)
         .map_err(CreateSnapshotError::MicrovmState)?;
 
-    snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
+    snapshot_state_to_file(&microvm_state, &params.snapshot_path, params.sync_snapshot_files)?;
 
     let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
         CreateSnapshotError::MicrovmState(MicrovmStateError::NotAllowed(
             "snapshot requires KVM".into(),
         ))
     })?;
-    kvm_vm.snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type, params.fill_gap_pages)?;
+    kvm_vm.snapshot_memory_to_file(
+        &params.mem_file_path,
+        params.snapshot_type,
+        params.fill_gap_pages,
+        params.sync_snapshot_files,
+    )?;
 
     // We need to mark queues as dirty again for all activated devices. The reason we
     // do it here is that we don't mark pages as dirty during runtime
@@ -193,6 +198,7 @@ pub fn create_snapshot(
 fn snapshot_state_to_file(
     microvm_state: &MicrovmState,
     snapshot_path: &Path,
+    sync: bool,
 ) -> Result<(), CreateSnapshotError> {
     use self::CreateSnapshotError::*;
     let mut snapshot_file = OpenOptions::new()
@@ -207,6 +213,9 @@ fn snapshot_state_to_file(
     snapshot_file
         .flush()
         .map_err(|err| SnapshotBackingFile("flush", err))?;
+    if !sync {
+        return Ok(());
+    }
     snapshot_file
         .sync_all()
         .map_err(|err| SnapshotBackingFile("sync_all", err))

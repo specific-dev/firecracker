@@ -573,6 +573,7 @@ impl KvmVm {
         mem_file_path: &Path,
         snapshot_type: SnapshotType,
         fill_gap_pages: u32,
+        sync: bool,
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
@@ -627,6 +628,9 @@ impl KvmVm {
 
         file.flush()
             .map_err(|err| MemoryBackingFile("flush", err))?;
+        if !sync {
+            return Ok(());
+        }
         file.sync_all()
             .map_err(|err| MemoryBackingFile("sync_all", err))
     }

@@ -53,6 +53,18 @@ pub struct CreateSnapshotParams {
     /// that maps far fewer extents (one mapping per extent). 0 = off.
     #[serde(default)]
     pub fill_gap_pages: u32,
+    /// Whether to `fsync` the state and memory files before the request
+    /// returns (default true). `false` leaves the writes in the page cache:
+    /// readers and mappers of the files see them at once, only durability
+    /// across a host crash is given up — and the sync is most of the time
+    /// the guest spends paused for a large Diff on a busy disk. Same name
+    /// and meaning as upstream's (post-1.16) option.
+    #[serde(default = "default_true")]
+    pub sync_snapshot_files: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Allows for changing the mapping between tap devices and host devices
