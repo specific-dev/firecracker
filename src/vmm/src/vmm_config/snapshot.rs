@@ -45,6 +45,14 @@ pub struct CreateSnapshotParams {
     pub snapshot_path: PathBuf,
     /// Path to the file that will contain the guest memory.
     pub mem_file_path: PathBuf,
+    /// `Diff` only: also write the clean pages of any run of at most this
+    /// many pages that sits between two dirty runs, so the sparse memory
+    /// file has fewer, larger data extents. The bytes are exactly what the
+    /// guest holds there (unchanged since restore), so the file stays a
+    /// correct overlay; it costs extra bytes in the diff and buys a restore
+    /// that maps far fewer extents (one mapping per extent). 0 = off.
+    #[serde(default)]
+    pub fill_gap_pages: u32,
 }
 
 /// Allows for changing the mapping between tap devices and host devices

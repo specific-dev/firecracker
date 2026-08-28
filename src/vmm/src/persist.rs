@@ -179,7 +179,7 @@ pub fn create_snapshot(
             "snapshot requires KVM".into(),
         ))
     })?;
-    kvm_vm.snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type)?;
+    kvm_vm.snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type, params.fill_gap_pages)?;
 
     // We need to mark queues as dirty again for all activated devices. The reason we
     // do it here is that we don't mark pages as dirty during runtime

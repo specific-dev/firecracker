@@ -1240,6 +1240,7 @@ mod tests {
                 snapshot_type: SnapshotType::Full,
                 snapshot_path: PathBuf::new(),
                 mem_file_path: PathBuf::new(),
+                fill_gap_pages: 0,
             },
         )));
         #[cfg(target_arch = "x86_64")]

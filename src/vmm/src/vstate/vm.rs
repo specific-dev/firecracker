@@ -572,6 +572,7 @@ impl KvmVm {
         &self,
         mem_file_path: &Path,
         snapshot_type: SnapshotType,
+        fill_gap_pages: u32,
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
@@ -615,7 +616,7 @@ impl KvmVm {
         match snapshot_type {
             SnapshotType::Diff => {
                 let dirty_bitmap = self.get_dirty_bitmap()?;
-                self.guest_memory().dump_dirty(&mut file, &dirty_bitmap)?;
+                self.guest_memory().dump_dirty(&mut file, &dirty_bitmap, fill_gap_pages)?;
             }
             SnapshotType::Full => {
                 self.guest_memory().dump(&mut file)?;

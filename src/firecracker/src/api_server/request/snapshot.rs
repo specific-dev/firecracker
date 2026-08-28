@@ -148,6 +148,7 @@ mod tests {
             snapshot_type: SnapshotType::Diff,
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
+            fill_gap_pages: 0,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
@@ -162,6 +163,7 @@ mod tests {
             snapshot_type: SnapshotType::Full,
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
+            fill_gap_pages: 0,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
