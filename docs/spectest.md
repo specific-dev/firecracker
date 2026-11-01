@@ -56,3 +56,22 @@ Same name and meaning as upstream's post-1.16 option: `false` skips the
   (`cargo build --release --target <arch>-unknown-linux-gnu -p
   firecracker`; `libseccomp` dev package required) and pins the commit as
   `FC_REF` in its `scripts/local-vms-setup.sh`.
+
+## Snapshot mapping read-ahead
+
+Base snapshot mappings and every sparse overlay extent use `MADV_RANDOM`.
+A later `MAP_FIXED` overlay creates a new VMA, so advising only the base is
+insufficient. This hint leaves file bytes, private copy-on-write, dirty tracking,
+and snapshot serialization unchanged. It does not change block-device policy or
+advise anonymous guest RAM. Advice failure is logged without failing restoration.
+
+In a live Harmony run on 2026-11-01, vCPU threads accounted for 87–98% of sampled
+Firecracker physical reads (up to 4.85 GB/s), with zero read syscalls and thousands
+of major faults. The VM cgroup was at `memory.high`, repeatedly reclaiming file
+pages. A separate cold-file probe touching 1 MiB of scattered pages read 512 MiB
+with normal advice and 1 MiB with random advice. This establishes a read-amplification
+mechanism, not a measured production improvement. Production performance still
+requires a controlled workload comparison after the compatible runtime rollout.
+
+`test_snapshot_random_access_preserves_overlays_and_cow` verifies the real VMA
+hint, sparse holes, later-overlay precedence and private writes without KVM.
