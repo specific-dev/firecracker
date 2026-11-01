@@ -24,7 +24,7 @@ use vm_memory::{GuestMemoryError, GuestMemoryRegionBytes, VolatileSlice, WriteVo
 
 use crate::DirtyBitmap;
 use crate::arch::host_page_size;
-use crate::logger::error;
+use crate::logger::{error, warn};
 use crate::utils::u64_to_usize;
 use crate::vmm_config::machine_config::HugePageConfig;
 use crate::vstate::vm::{KvmVm, VmError};
@@ -673,11 +673,29 @@ pub fn apply_overlay(regions: &[GuestRegionMmap], overlay: &File) -> Result<(), 
             if ret == libc::MAP_FAILED {
                 return Err(MemoryError::OverlayMmap(std::io::Error::last_os_error()));
             }
+            // MAP_FIXED creates a new VMA: it does not inherit the base's advice.
+            advise_snapshot_access(ret, len);
             cur = piece_end;
         }
         pos = end;
     }
     Ok(())
+}
+
+// Guests access snapshot memory sparsely; file-offset read-ahead is unhelpful.
+// Speculative read-ahead can load large shadowed or unused ranges from every
+// overlay and evict other guests' working sets under cgroup memory pressure.
+// This changes only the access hint; mappings remain private and demand-paged.
+fn advise_snapshot_access(addr: *mut libc::c_void, len: usize) {
+    // SAFETY: callers supply a live, page-aligned mmap range that they own.
+    // MADV_RANDOM neither discards pages nor changes their contents/protection.
+    if unsafe { libc::madvise(addr, len, libc::MADV_RANDOM) } != 0 {
+        // An optional performance hint must never fail snapshot restoration.
+        warn!(
+            "Cannot disable snapshot read-ahead: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 pub fn snapshot_file(
@@ -698,12 +716,16 @@ pub fn snapshot_file(
         return Err(MemoryError::OffsetTooLarge);
     }
 
-    create(
+    let mapped = create(
         regions.into_iter(),
         libc::MAP_PRIVATE,
         Some(file),
         track_dirty_pages,
-    )
+    )?;
+    for region in &mapped {
+        advise_snapshot_access(region.as_ptr().cast(), region.size() as usize);
+    }
+    Ok(mapped)
 }
 
 /// Defines the interface for snapshotting memory.
@@ -1051,6 +1073,81 @@ mod tests {
         ];
         let guest_regions = snapshot_file(file, regions.into_iter(), false).unwrap();
         assert_eq!(guest_regions.len(), 3);
+    }
+
+    // Validate the actual kernel VMA policy, sparse holes, overlay precedence,
+    // and MAP_PRIVATE isolation without needing KVM.
+    #[test]
+    fn test_snapshot_random_access_preserves_overlays_and_cow() {
+        use std::os::unix::fs::FileExt;
+        let page = host_page_size();
+        let size = 4 * page;
+        let base = TempFile::new().unwrap().into_file();
+        base.set_len(size as u64).unwrap();
+        base.write_all_at(&vec![0x11; size], 0).unwrap();
+        let lower = TempFile::new().unwrap().into_file();
+        lower.set_len(size as u64).unwrap();
+        lower.write_all_at(&vec![0x22; page], page as u64).unwrap();
+        let upper = TempFile::new().unwrap().into_file();
+        upper.set_len(size as u64).unwrap();
+        upper.write_all_at(&vec![0x33; page], page as u64).unwrap();
+        let regions = snapshot_file(
+            base.try_clone().unwrap(),
+            [(GuestAddress(0), size)].into_iter(),
+            true,
+        )
+        .unwrap();
+        apply_overlay(&regions, &lower).unwrap();
+        apply_overlay(&regions, &upper).unwrap();
+        let ptr = regions[0].as_ptr();
+        for index in 0..size {
+            let expected = if (page..2 * page).contains(&index) {
+                0x33
+            } else {
+                0x11
+            };
+            assert_eq!(unsafe { *ptr.add(index) }, expected);
+        }
+        let start = ptr as usize;
+        let end = start + size;
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        let mut in_range = false;
+        let mut covered = 0;
+        for line in smaps.lines() {
+            let first = line.split_whitespace().next().unwrap_or("");
+            if let Some((lo, hi)) = first.split_once('-') {
+                if let (Ok(lo), Ok(hi)) =
+                    (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16))
+                {
+                    in_range = lo < end && hi > start;
+                    if in_range {
+                        covered += hi.min(end) - lo.max(start);
+                    }
+                }
+            } else if in_range && line.starts_with("VmFlags:") {
+                assert!(line.split_whitespace().any(|flag| flag == "rr"), "{line}");
+            }
+        }
+        assert_eq!(covered, size);
+        unsafe {
+            *ptr.add(page) = 0x44;
+        }
+        let sibling = snapshot_file(
+            base.try_clone().unwrap(),
+            [(GuestAddress(0), size)].into_iter(),
+            false,
+        )
+        .unwrap();
+        apply_overlay(&sibling, &lower).unwrap();
+        apply_overlay(&sibling, &upper).unwrap();
+        assert_eq!(unsafe { *sibling[0].as_ptr().add(page) }, 0x33);
+        let mut byte = [0];
+        base.read_exact_at(&mut byte, page as u64).unwrap();
+        assert_eq!(byte, [0x11]);
+        lower.read_exact_at(&mut byte, page as u64).unwrap();
+        assert_eq!(byte, [0x22]);
+        upper.read_exact_at(&mut byte, page as u64).unwrap();
+        assert_eq!(byte, [0x33]);
     }
 
     #[test]
